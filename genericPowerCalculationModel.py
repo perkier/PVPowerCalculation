@@ -13,6 +13,11 @@ import matplotlib as mpl
 from pvlib.temperature import TEMPERATURE_MODEL_PARAMETERS
 # finally, we import the pvlib library
 import pvlib
+
+# Import CoolProp - Thermodynamics Library
+from CoolProp.CoolProp import PropsSI, PhaseSI, HAPropsSI
+import CoolProp.CoolProp as CP
+
 # Find the absolute file path to your pvlib installation
 pvlib_abspath = os.path.dirname(os.path.abspath(inspect.getfile(pvlib)))
 
@@ -215,4 +220,125 @@ ax.set_ylim(0, None)
 ax.set_xlabel('Single Diode model')
 ax.set_ylabel('Sandia model')
 fig.colorbar(sc, label='POA Global (W/m**2)')
+plt.show(block=False)
+
+
+
+### Solar Collector and Refrigeration System
+
+def solar_colector(T_ext, T_in, I, g_s):
+    # Calculates solar colector parameters based on External Temperature, entrance temperature, Global Irradiance and mass flow rate [g/s]
+
+    Area = 2
+    m_dot = Area * g_s * 10**(-3)
+    Losses = 3
+
+    # 0.97 and 3 are normal value for heat losses but they must be changed according to the solar colector parameters
+
+    if I > 0:
+        efficiency = 0.97 - ( Losses * (T_in - T_ext)/ I )
+
+    # Irradiance can be zero at night so dividing by zero will raise a warning
+    else:
+        efficiency = 0
+
+    Total_sun_ernergy = Area * I
+
+    Col_eff_power = Total_sun_ernergy * efficiency
+
+    ## It would be very interesting to play with the percentage also
+    Col_Fluid = 'R600a'
+
+    # Get speciic heat from fluid
+    cp = PropsSI('C', 'T', 273 + T_in , 'P', 101.325, Col_Fluid)
+
+    # Get Exit temperature from the colector - Q = m_dot * cp * (T_exit - T_in)
+    T_exit = T_in + Col_eff_power / (m_dot * cp)
+
+    if Col_eff_power < 0:
+        Col_eff_power = 0
+
+    return Col_eff_power, efficiency, T_exit, Total_sun_ernergy
+
+
+# Choose the working fluid inside the refrigeration cycle - This should be inside a for loop to compare various fluids
+fluid = 'R152a'
+T_sup = 273.15 + 5
+
+# Define evaporator Temperature - Temperature to cool the house
+T_e = 10
+
+# Assuming an entrance temperature of 20 for the first solar colector - System turned off
+T_in = 20
+
+Q_g = []
+Q_sun = []
+T_out_circuit = []
+
+i = 0
+
+# Looping through a year to simulate thermal loads and efficiencies
+for amb_temp in tmy_data.loc[:,'DryBulb']:
+
+    poa_global = poa_irrad.loc[:,'poa_global'][i]
+
+    hour_power = 0
+    sun_energy = 0
+
+    T_out_circuit.append(T_in)
+
+    # Create a for loop to simulate two collectors in series
+    for j in range(2):
+
+        Col_eff_power, efficiency, T_exit, _sun = solar_colector(amb_temp, T_in, poa_global, 7)
+
+        hour_power += Col_eff_power
+        sun_energy += _sun
+
+        T_in = T_exit
+
+    ##  Still need to model the thermal storage and CHP system
+
+    # Lets assume that the Generator has a 90% efficiency - This depends on the brand and type of mounting
+    # Assuming a constant 90ºC temperature from the thermal storage
+
+    Q_g.append(0.9 * hour_power)
+    Q_sun.append(sun_energy)
+
+    T_g = 90
+    P_g = PropsSI('P', 'T', T_g + 273.15, 'Q', 1, fluid)
+
+    # Define condenser temperature - Ambient Temperature - 10 - In PropSI the Temp. should be in Kelvin
+    T_c = amb_temp - 10
+    P_c = PropsSI('P', 'T', T_c + 273.15, 'Q', 1, fluid)
+
+    # Q_e will depend on the required heat load to cool the house down - Architectural and thermal modeling in Energy+
+    # Assuming 5 kW of cooling power:
+
+    Q_e = 5
+
+    i += 1
+
+
+heating_power = pd.DataFrame({'Irradiance_Power': pd.Series(Q_sun, index=tmy_data.index),
+                              'Heating_power': pd.Series(Q_g, index=tmy_data.index),
+                              'Temperature*100': tmy_data.loc[:,'DryBulb'].apply(lambda x: x*100) })
+
+plt.figure(16, figsize=(12,12))
+legend = heating_power.columns.tolist()
+plt.plot(heating_power)
+plt.legend(legend)
+plt.ylabel('Power [W]')
+plt.title('Collector Efficiency')
+plt.show(block=False)
+
+Circuit_Temperatures = pd.DataFrame({'T_Out_Circuit': pd.Series(T_out_circuit, index=tmy_data.index),
+                                     'Amb_Temperature': tmy_data.loc[:,'DryBulb'] })
+
+plt.figure(17, figsize=(12,12))
+legend = Circuit_Temperatures.columns.tolist()
+plt.plot(Circuit_Temperatures)
+plt.legend(legend)
+plt.ylabel('Temperature [ºC]')
+plt.title('Temperatures in the Circuit')
 plt.show()
